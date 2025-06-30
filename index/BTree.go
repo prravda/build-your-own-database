@@ -31,10 +31,14 @@ const (
 	BNODE_LEAF = 2 // leaf node with values
 )
 
+// get the 0, 1 byte for checking node type(internal or leaf)
+// and convert it into uint16 
 func (node BNode) btype() uint16 {
 	return binary.LittleEndian.Uint16(node[0:2])
 }
 
+// get the 2, 3 byte for checking the number of keys(nkeys)
+// and convert it into uint16
 func (node BNode) nkeys() uint16 {
 	return binary.LittleEndian.Uint16(node[2:4])
 }
@@ -46,18 +50,27 @@ func (node BNode) setHeader(btype uint16, nkeys uint16) {
 
 // pointers
 func (node BNode) getPtr(idx uint16) uint64 {
-	// TODO: convert assert more appropriate for Golang
-	assert(idx < node.nkeys())
+	// check index boundary
+	if (idx > node.nkeys()) {
+		panic("index out of range")
+	}
+	
 	pos := HEADER + 8*idx
 	
 	return binary.LittleEndian.Uint64(node[pos:])
 }
 
-func (node BNode) setPtr(idx uint16, val uint64)
+func (node BNode) setPtr(idx uint16, val uint64) {
+	// TODO: implemented
+}
 
 // offset list
 func offsetPos(node BNode, idx uint16) uint16 {
-	assert(1 <= idx && idx <= node.nkeys())
+	// check index bound
+	if (idx > node.nkeys()) {
+		panic("index out of range")
+	}
+	
 	return HEADER + 8*node.nkeys() + 2*(idx-1)
 }
 
@@ -68,16 +81,24 @@ func (node BNode) getOffset(idx uint16) uint16 {
 	return binary.LittleEndian.Uint16((node[offsetPos(node, idx):]))
 }
 
-func (node BNode) setOffset(idx uint16, offset uint16) 
+func (node BNode) setOffset(idx uint16, offset uint16) {
+	// TODO: implement
+}
 
 // key-value
 func (node BNode) kvPos(idx uint16) uint16 {
-	assert(idx <= node.nkeys())
+	// check index boundary
+	if (idx > node.nkeys()) {
+		panic("index out of range")
+	}
 	return HEADER + 8*node.nkeys() + 2*node.nkeys() + node.getOffset(idx)
 }
 
 func (node BNode) getKey(idx uint16) []byte {
-	assert(idx < node.nkeys())
+	// check index boundary
+	if (idx > node.nkeys()) {
+		panic("index out of range")
+	}
 	pos := node.kvPos(idx)
 	klen := binary.LittleEndian.Uint16(node[pos:])
 	return node[pos+4:][:klen]
@@ -91,7 +112,7 @@ func (node BNode) nbytes() uint16 {
 }
 
 // returns the first kid node whose range intersects the key (kid[i] <= key)
-// TODO: binary search
+// TODO: implement it binary search
 func nodeLookupLE(node BNode, key []byte) uint16 {
 	nkeys:= node.nkeys()
 	found := uint16(0)
@@ -122,8 +143,10 @@ func leafInsert(
 	nodeAppendRange(new, old, idx+1, idx, old.nkeys()-idx)
 }
 
-// TODO: implement leafUpdate
-func leafUpdate()
+
+func leafUpdate() {
+// TODO: implement
+}
 
 // copy a KV into the position
 func nodeAppendKV(new BNode, idx uint16, ptr uint64, key []byte, val []byte) {
@@ -197,7 +220,10 @@ func nodeSplitIntoThree(old BNode) (uint16, [3]BNode) {
 
 	nodeSplitIntoTwo(leftleft, middle, left)
 
-	assert(leftleft.nbytes() <= BTREE_PAGE_SIZE)
+	// check node size is exceeded to BTREE_PAGE_SIZE
+	if (leftleft.nbytes() > BTREE_PAGE_SIZE) {
+		panic("node size should be smaller than page size")
+	}
 
 	// three nodes
 	return 3, [3]BNode{leftleft, middle, right} 
@@ -220,7 +246,7 @@ func treeInsert(tree *BTree, node BNode, key []byte, val []byte) BNode {
 		// leaf, node.getKey(idx) <= key
 		if bytes.Equal(key, node.getKey(idx)) {
 			// found the key, update it.
-			leafUpdate(new, node, idx, key, val)
+			// leafUpdate(new, node, idx, key, val)
 		} else {
 			// insert it after the position.
 			leafInsert(new, node, idx+1, key, val)
@@ -257,5 +283,9 @@ func init() {
 	// 2b(key len)
 	// 2b(val len)
 	node1max := HEADER + 8 + 2 + 4 + BTREE_MAX_KEY_SIZE + BTREE_MAX_VAL_SIZE
-	assert(node1max <= BTREE_MAX_KEY_SIZE)
+	
+	// check node size is exceeded to BTREE_PAGE_SIZE
+	if (node1max > BTREE_PAGE_SIZE) {
+		panic("node size should be smaller than page size")
+	}
 }
