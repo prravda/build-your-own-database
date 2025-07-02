@@ -43,31 +43,47 @@ func (node BNode) nkeys() uint16 {
 	return binary.LittleEndian.Uint16(node[2:4])
 }
 
+// get node type and number of keys
 func (node BNode) setHeader(btype uint16, nkeys uint16) {
+	// set node type
 	binary.LittleEndian.PutUint16(node[0:2], btype)
+	// set number of keys
 	binary.LittleEndian.PutUint16(node[2:4], nkeys)
 }
 
 // pointers
 func (node BNode) getPtr(idx uint16) uint64 {
 	// check index boundary
-	if (idx > node.nkeys()) {
+	if (idx >= node.nkeys()) {
 		panic("index out of range")
 	}
 	
+	// the pointer size is 8 byte
+	// so for getting position, multiple 8 to idx add the header size
 	pos := HEADER + 8*idx
 	
+	// then take node after position
 	return binary.LittleEndian.Uint64(node[pos:])
 }
 
 func (node BNode) setPtr(idx uint16, val uint64) {
-	// TODO: implemented
+	// check idx is valid 
+	// Question: how can I check the idx is valid in Golang?
+	if (idx >= node.nkeys()) {
+		panic("index out of range")
+	}
+
+	// get position of pointers index after header size
+	pos := HEADER + 8*idx
+
+	// write val to this pos
+	binary.LittleEndian.PutUint64(node[pos:], val)
 }
 
 // offset list
 func offsetPos(node BNode, idx uint16) uint16 {
 	// check index bound
-	if (idx > node.nkeys()) {
+	if idx == 0 || idx >= node.nkeys() {
 		panic("index out of range")
 	}
 	
@@ -75,20 +91,27 @@ func offsetPos(node BNode, idx uint16) uint16 {
 }
 
 func (node BNode) getOffset(idx uint16) uint16 {
-	if idx == 0 {
-		return 0
+	// check index bound
+	if idx == 0 || idx >= node.nkeys() {
+		panic("index out of range")
 	}
+
+	// Question: Is there another check logic for getOffset?
 	return binary.LittleEndian.Uint16((node[offsetPos(node, idx):]))
 }
 
 func (node BNode) setOffset(idx uint16, offset uint16) {
-	// TODO: implement
+	// get position
+	pos := offsetPos(node, idx)
+
+ // write 
+ binary.LittleEndian.PutUint16(node[pos:], offset)
 }
 
 // key-value
 func (node BNode) kvPos(idx uint16) uint16 {
 	// check index boundary
-	if (idx > node.nkeys()) {
+	if (idx >= node.nkeys()) {
 		panic("index out of range")
 	}
 	return HEADER + 8*node.nkeys() + 2*node.nkeys() + node.getOffset(idx)
@@ -96,7 +119,7 @@ func (node BNode) kvPos(idx uint16) uint16 {
 
 func (node BNode) getKey(idx uint16) []byte {
 	// check index boundary
-	if (idx > node.nkeys()) {
+	if (idx >= node.nkeys()) {
 		panic("index out of range")
 	}
 	pos := node.kvPos(idx)
@@ -104,7 +127,22 @@ func (node BNode) getKey(idx uint16) []byte {
 	return node[pos+4:][:klen]
 }
 
-func (node BNode) getVal(idx uint16) []byte
+func (node BNode) getVal(idx uint16) []byte {
+	// check index boundary
+	if (idx >= node.nkeys()) {
+		panic("index out of range")
+	}
+
+	// get position
+	pos := node.kvPos(idx)
+
+	// get keylen
+	klen := binary.LittleEndian.Uint16(node[pos:])
+	// and get vlen
+	vlen := binary.LittleEndian.Uint16(node[pos+2:])
+
+	return node[pos+4+klen:][:vlen]
+}
 
 // node size in byte
 func (node BNode) nbytes() uint16 {
@@ -125,12 +163,13 @@ func nodeLookupLE(node BNode, key []byte) uint16 {
 		if compare <= 0 {
 			found = i
 		} 
-		if compare >= 0 {
+		if compare > 0 {
 			break
 		}
 
 	}
-			return found
+
+	return found
 }
 
 func leafInsert(
@@ -144,8 +183,15 @@ func leafInsert(
 }
 
 
-func leafUpdate() {
-// TODO: implement
+func leafUpdate(new BNode, old BNode, idx uint16, key []byte, val []byte) {
+	// set heaeder to new node from old one
+	// mark LEAF same with old one because new one is also leaf
+	// and get the nkeys for maintaining the total number of key 
+	new.setHeader(BNODE_LEAF, old.nkeys())
+
+	nodeAppendRange(new, old, 0, 0, idx)
+	nodeAppendKV(new, idx, 0, key, val)
+	nodeAppendRange(new, old, idx+1, idx, old.nkeys()-idx)
 }
 
 // copy a KV into the position
@@ -166,7 +212,28 @@ func nodeAppendKV(new BNode, idx uint16, ptr uint64, key []byte, val []byte) {
 func nodeAppendRange(
 	new BNode, old BNode,
 	dstNew uint16, srcOld uint16, n uint16,
-)
+) {
+	// if nothing to copy, just return
+	if n == 0 {
+		return
+	}
+
+	newStartOffset := new.getOffset((dstNew))
+	oldStartPos := old.kvPos(srcOld)
+
+	oldEndPos := old.kvPos(srcOld + n)
+
+	bytesToCopy := oldEndPos - oldStartPos
+
+	copy(new[new.kvPos(dstNew):new.kvPos(dstNew)+bytesToCopy], old[oldStartPos:oldEndPos])
+
+	for i := uint16(0); i < n; i++ {
+		new.setPtr(dstNew+1, old.getPtr(srcOld+i))
+
+		kvBytesWithRange := old.getOffset(srcOld + i + 1) - old.getOffset(srcOld)
+		new.setOffset(dstNew+i+1, newStartOffset+kvBytesWithRange)
+	}
+}
 
 // replace a link with one or multiple links
 func nodeReplaceKidN(
@@ -246,7 +313,7 @@ func treeInsert(tree *BTree, node BNode, key []byte, val []byte) BNode {
 		// leaf, node.getKey(idx) <= key
 		if bytes.Equal(key, node.getKey(idx)) {
 			// found the key, update it.
-			// leafUpdate(new, node, idx, key, val)
+			leafUpdate(new, node, idx, key, val)
 		} else {
 			// insert it after the position.
 			leafInsert(new, node, idx+1, key, val)
@@ -276,6 +343,96 @@ func nodeInsert(
 
 	nodeReplaceKidN(tree, new, node, idx, split[:nsplit]...)
 }
+
+// insert a new key or update an existing key
+func (tree *BTree) Insert(key []byte, val []byte) {
+	if tree.root == 0 {
+		// create the first node with the size limit
+		root := BNode(make([]byte, BTREE_PAGE_SIZE))
+		// and set header to leaf node and insert two keys
+		root.setHeader(BNODE_LEAF, 2)
+
+		// a dummy key, this makes the tree cover the whole key space
+		// thus, a lookup can always find a containing node
+		nodeAppendKV(root, 0, 0, nil, nil)
+		nodeAppendKV(root, 1, 0, key, val)
+		tree.root = tree.new(root)
+		return
+	}
+
+	// insert via treeInsert
+	node := treeInsert(tree, tree.get(tree.root), key, val)
+	// try to split into three
+	nsplit, split := nodeSplitIntoThree(node)
+	// then delete the root
+	tree.del(tree.root)
+
+	// if nsplit is larger than 1, 
+	// in other words the tree is splitted after insertion
+	if nsplit > 1 {
+		// add a new level
+		root := BNode(make([]byte, BTREE_PAGE_SIZE))
+		root.setHeader(BNODE_NODE, nsplit)
+
+		for i, keyNode := range split[:nsplit] {
+			ptr, key := tree.new(keyNode), keyNode.getKey(0)
+			nodeAppendKV(root, uint16(i), ptr, key, nil)
+		}
+		tree.root = tree.new(root)
+	} else {
+		tree.root = tree.new(split[0])
+	}
+}
+
+// remove a key from a leaf node
+func leafDelete(new BNode, old BNode, idx uint16) {
+	// 0. set header to old - 1
+	// because a idx'th key is going to be removed
+	 new.setHeader(BNODE_LEAF, old.nkeys()-1)
+
+	 // 1. and second, move all kv pairs of old to new one except idx'th one
+	 // 1-0. first, copy from 0'th to (idx-1)'th of old leaf node to new leaf node
+	 nodeAppendRange(new, old, 0, 0, idx)
+
+	 // 1-1. second, copy after idx'th 
+	 // from (idx+1)'th to the end of old node
+	 nodeAppendRange(new, old, idx, idx+1, old.nkeys()-(idx+1))
+}
+
+// merge 2 nodes(left, right) into 1(new)
+func nodeMerge(new BNode, left BNode, right BNode) {
+	// 0. set header to new node 
+	new.setHeader(BNODE_LEAF, left.nkeys() + right.nkeys())
+
+	// 1. copy left's all kv to new one
+	nodeAppendRange(new, left, 0, 0, left.nkeys())
+	
+	// 2. copy right's all kv to new one
+	nodeAppendRange(new, right, left.nkeys(), 0, right.nkeys())
+}
+
+// replace 2 adjacent links with 1
+func nodeReplaceTwoKid(
+	new BNode, old BNode, idx uint16, ptr uint64, key []byte,
+) {
+	// 0. set header to new node 
+	// it is the case of new internal node, so mark it to internal node
+	// and the total number of branch to leaf node, so set the total number of kv to old.nkeys()-1
+	new.setHeader(BNODE_NODE, old.nkeys()-1)
+
+	// 1. copy all kv pairs from old before first replaced link
+	nodeAppendRange(new, old, 0, 0, idx)
+
+	// 2. insert the new single merged link (pointer and key) at idx in new
+	// and because this node is internal node, set value to nil
+	nodeAppendKV(new, idx, ptr, key, nil)
+
+	// 3. copy all kv pairs from old after the second replaced link
+	nodeAppendRange(new, old, idx+1, idx+2, old.nkeys()-(idx+2))
+}
+
+// delete a key and returns whether the key was there
+func (tree *BTree) Delete(key []byte) bool
 
 func init() {
 	// header(4B)
